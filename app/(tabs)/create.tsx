@@ -14,6 +14,9 @@ export default function CreateRecipeScreen() {
   const [isTakingPhoto, setIsTakingPhoto] = useState<boolean>(false);
   const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('back');
   const cameraRef = useRef<CameraView>(null);
+  // Delay mounting the CameraView inside Modal to avoid surface race conditions on Android/Fabric
+  const [shouldRenderCamera, setShouldRenderCamera] = useState<boolean>(false);
+  const renderDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Check camera permissions when component mounts
   useEffect(() => {
@@ -45,15 +48,34 @@ export default function CreateRecipeScreen() {
 
   // Mobile-specific camera initialization
   useEffect(() => {
-    if (Platform.OS !== 'web' && cameraVisible && !cameraReady) {
-      const timer = setTimeout(() => {
-        console.log('Mobile camera initialization timeout - forcing ready state');
-        setCameraReady(true);
-      }, 3000);
-      
-      return () => clearTimeout(timer);
+    // Reset readiness when the camera modal opens or facing changes
+    if (Platform.OS !== 'web' && cameraVisible) {
+      setCameraReady(false);
     }
   }, [cameraVisible, cameraReady]);
+
+  // Defer rendering the CameraView briefly after showing the Modal to avoid black preview on Android
+  useEffect(() => {
+    if (cameraVisible) {
+      setShouldRenderCamera(false);
+      if (renderDelayRef.current) clearTimeout(renderDelayRef.current);
+      renderDelayRef.current = setTimeout(() => {
+        setShouldRenderCamera(true);
+      }, Platform.OS === 'android' ? 80 : 0);
+    } else {
+      setShouldRenderCamera(false);
+      if (renderDelayRef.current) {
+        clearTimeout(renderDelayRef.current);
+        renderDelayRef.current = null;
+      }
+    }
+    return () => {
+      if (renderDelayRef.current) {
+        clearTimeout(renderDelayRef.current);
+        renderDelayRef.current = null;
+      }
+    };
+  }, [cameraVisible]);
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -281,16 +303,22 @@ export default function CreateRecipeScreen() {
         visible={cameraVisible} 
         transparent={false} 
         animationType="slide"
+    // On Android, enabling hardware acceleration prevents black camera preview in Modal
+    hardwareAccelerated
         presentationStyle={Platform.OS === 'ios' ? 'fullScreen' : undefined}
       >
         <View style={styles.modalContainer}>
-          <CameraView 
-            style={styles.camera}
-            ref={cameraRef}
-            facing={cameraFacing}
-            onCameraReady={handleCameraReady}
-            onMountError={handleCameraError}
-          />
+          {shouldRenderCamera && (
+            <CameraView 
+              style={styles.camera}
+              ref={cameraRef}
+              facing={cameraFacing}
+        // Force remount when toggling visibility or switching cameras to avoid stale surfaces on mobile
+        key={`${cameraFacing}-${cameraVisible ? 'open' : 'closed'}`}
+              onCameraReady={handleCameraReady}
+              onMountError={handleCameraError}
+            />
+          )}
           <View style={styles.cameraButtons}>
             <TouchableOpacity style={styles.closeButton} onPress={closeCamera}>
               <Text style={styles.closeButtonText}>Close</Text>
